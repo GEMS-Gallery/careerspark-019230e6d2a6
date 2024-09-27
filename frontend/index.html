@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Application Assistant</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.3.4/axios.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            margin-bottom: 10px;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        #output {
+            margin-top: 20px;
+            white-space: pre-wrap;
+        }
+        .job-listing {
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .recommended {
+            border: 2px solid #27ae60;
+        }
+    </style>
+</head>
+<body>
+    <h1>Job Application Assistant</h1>
+    <div>
+        <h2>Resume</h2>
+        <textarea id="resume" placeholder="Paste your resume here..."></textarea>
+    </div>
+    <div>
+        <h2>Job Listings URL</h2>
+        <input type="text" id="jobsUrl" value="https://openai.com/careers/search" style="width: 100%;">
+    </div>
+    <div>
+        <h2>API Keys</h2>
+        <input type="text" id="firecrawlApiKey" placeholder="Firecrawl API Key" style="width: 100%;">
+        <input type="text" id="openaiApiKey" placeholder="OpenAI API Key" style="width: 100%;">
+    </div>
+    <button onclick="processJobs()">Process Jobs</button>
+    <div id="output"></div>
+
+    <script>
+        async function processJobs() {
+            const output = document.getElementById('output');
+            const resume = document.getElementById('resume').value;
+            const jobsUrl = document.getElementById('jobsUrl').value;
+            const firecrawlApiKey = document.getElementById('firecrawlApiKey').value;
+            const openaiApiKey = document.getElementById('openaiApiKey').value;
+
+            output.innerHTML = 'Processing...';
+
+            try {
+                // Scrape jobs page
+                const scrapeResponse = await axios.post('https://api.firecrawl.dev/v1/scrape', {
+                    url: jobsUrl,
+                    formats: ['markdown']
+                }, {
+                    headers: { 'Authorization': `Bearer ${firecrawlApiKey}` }
+                });
+
+                if (!scrapeResponse.data.success) {
+                    throw new Error('Failed to scrape the jobs page');
+                }
+
+                const htmlContent = scrapeResponse.data.data.markdown;
+
+                // Extract apply links
+                const extractLinksResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
+                    model: 'gpt-4',
+                    messages: [{
+                        role: 'user',
+                        content: `Extract up to 30 job application links from the given markdown content.
+                        Return the result as a JSON object with a single key 'apply_links' containing an array of strings (the links).
+                        The output should be a valid JSON object, with no additional text.
+
+                        Markdown content:
+                        ${htmlContent.slice(0, 100000)}`
+                    }]
+                }, {
+                    headers: { 'Authorization': `Bearer ${openaiApiKey}` }
+                });
+
+                const applyLinks = JSON.parse(extractLinksResponse.data.choices[0].message.content).apply_links;
+
+                // Process each apply link
+                const extractedData = [];
+                for (const link of applyLinks) {
+                    const jobResponse = await axios.post('https://api.firecrawl.dev/v1/scrape', {
+                        url: link,
+                        formats: ['extract'],
+                        actions: [{ type: 'click', selector: '#job-overview' }],
+                        extract: {
+                            schema: {
+                                type: 'object',
+                                properties: {
+                                    job_title: { type: 'string' },
+                                    sub_division_of_organization: { type: 'string' },
+                                    key_skills: { type: 'array', items: { type: 'string' } },
+                                    compensation: { type: 'string' },
+                                    location: { type: 'string' },
+                                    apply_link: { type: 'string' }
+                                },
+                                required: ['job_title', 'sub_division_of_organization', 'key_skills', 'compensation', 'location', 'apply_link']
+                            }
+                        }
+                    }, {
+                        headers: { 'Authorization': `Bearer ${firecrawlApiKey}` }
+                    });
+
+                    if (jobResponse.data.success) {
+                        extractedData.push(jobResponse.data.data.extract);
+                    }
+                }
+
+                // Use OpenAI to recommend jobs
+                const recommendResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
+                    model: 'gpt-4',
+                    messages: [{
+                        role: 'user',
+                        content: `Please analyze the resume and job listings, and return a JSON list of the top 3 roles that best fit the candidate's experience and skills. Include only the job title, compensation, and apply link for each recommended role. The output should be a valid JSON array of objects in the following format, with no additional text:
+
+                        [
+                          {
+                            "job_title": "Job Title",
+                            "compensation": "Compensation (if available, otherwise empty string)",
+                            "apply_link": "Application URL"
+                          },
+                          ...
+                        ]
+
+                        Based on the following resume:
+                        ${resume}
+
+                        And the following job listings:
+                        ${JSON.stringify(extractedData, null, 2)}`
+                    }]
+                }, {
+                    headers: { 'Authorization': `Bearer ${openaiApiKey}` }
+                });
+
+                const recommendedJobs = JSON.parse(recommendResponse.data.choices[0].message.content);
+
+                // Display results
+                let resultHtml = '<h2>Job Listings</h2>';
+                extractedData.forEach(job => {
+                    const isRecommended = recommendedJobs.some(rec => rec.job_title === job.job_title);
+                    resultHtml += `
+                        <div class="job-listing ${isRecommended ? 'recommended' : ''}">
+                            <h3>${job.job_title}</h3>
+                            <p><strong>Subdivision:</strong> ${job.sub_division_of_organization}</p>
+                            <p><strong>Key Skills:</strong> ${job.key_skills.join(', ')}</p>
+                            <p><strong>Compensation:</strong> ${job.compensation}</p>
+                            <p><strong>Location:</strong> ${job.location}</p>
+                            <p><a href="${job.apply_link}" target="_blank">Apply</a></p>
+                        </div>
+                    `;
+                });
+
+                resultHtml += '<h2>Recommended Jobs</h2>';
+                recommendedJobs.forEach(job => {
+                    resultHtml += `
+                        <div class="job-listing recommended">
+                            <h3>${job.job_title}</h3>
+                            <p><strong>Compensation:</strong> ${job.compensation}</p>
+                            <p><a href="${job.apply_link}" target="_blank">Apply</a></p>
+                        </div>
+                    `;
+                });
+
+                output.innerHTML = resultHtml;
+            } catch (error) {
+                output.innerHTML = `Error: ${error.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

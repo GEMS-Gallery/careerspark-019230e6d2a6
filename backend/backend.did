@@ -1,0 +1,14 @@
+type Job = 
+ record {
+   company: text;
+   description: text;
+   id: nat;
+   requirements: vec text;
+   title: text;
+ };
+service : {
+  addJob: (text, text, text, vec text) -> (nat);
+  getAllJobs: () -> (vec Job) query;
+  getJob: (nat) -> (opt Job) query;
+  searchJobs: (text) -> (vec Job) query;
+}
